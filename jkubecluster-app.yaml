@@ -1,0 +1,121 @@
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: jkubecluster
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: jgroups-kubeping-service-account
+  namespace: jkubecluster
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: jgroups-kubeping-pod-reader
+  namespace: jkubecluster
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: jgroups-kubeping-api-access
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: jgroups-kubeping-pod-reader
+subjects:
+- kind: ServiceAccount
+  name: jgroups-kubeping-service-account
+  namespace: jkubecluster
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jkubecluster-evandromoura
+  namespace: jkubecluster
+spec:
+  selector:
+    matchLabels:
+      app: jkubecluster-evandromoura-server
+      tier: Production
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: jkubecluster-evandromoura-server
+        tier: Production
+    spec:
+      serviceAccountName: jgroups-kubeping-service-account
+      containers:
+        - name: jkubecluster-evandromoura
+          image: evandromoura/jkubecluster
+          command: ["/opt/jboss/wildfly/bin/standalone.sh"]
+          args: ["--server-config", "standalone-full-ha.xml", "-b", $(POD_IP), "-bmanagement", $(POD_IP) ,"-bprivate", $(POD_IP) ]
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+            - containerPort: 9990
+            - containerPort: 7600
+            - containerPort: 8888
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: KUBERNETES_LABELS
+              value: app=jkubecluster-evandromoura
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jkubecluster-evandromoura-service
+  namespace: jkubecluster
+spec:
+  type: LoadBalancer
+  selector:
+    app: jkubecluster-evandromoura-server
+  ports:
+    - name: jkubecluster-evandromoura-http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+      #externalIPs:
+      #- 192.168.12.50
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jkubecluster-evandromoura-ingress
+  namespace: jkubecluster
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    #cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+      - https-jkubecluster.evandromoura.com
+    secretName: tls-jkubecluster-ingress
+  rules:
+  - host: jkubecluster.evandromoura.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: jkubecluster-evandromoura-service
+            port:
+              number: 8080
